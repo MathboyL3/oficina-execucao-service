@@ -107,8 +107,46 @@ public class ExecucaoUseCasesTests
 
         await act.Should().ThrowAsync<DomainException>().WithMessage("*estoque*");
         ativa.Status.Should().Be(StatusReserva.Ativa);
+        // O status só muda depois que todos os estoques das reservas Ativas foram resolvidos.
+        e.Status.Should().Be(StatusExecucao.EmReparo);
         _bus.Verify(b => b.Publish(It.IsAny<ExecucaoFinalizada>(), It.IsAny<CancellationToken>()), Times.Never);
         _uow.Verify(u => u.CommitAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Finalizar_valida_todos_os_estoques_antes_de_consumir()
+    {
+        var os = Guid.NewGuid();
+        var e = Setup(ExecucaoOS.Enfileirar(os, Array.Empty<(Guid, int)>()));
+        e.Iniciar(); e.RegistrarDiagnostico("ok");
+        var est = EstoquePeca.Criar(Guid.NewGuid(), 5); est.Reservar(2, "x");
+        var comEstoque = ReservaPeca.Criar(os, est.PecaId, 2);
+        var semEstoque = ReservaPeca.Criar(os, Guid.NewGuid(), 1);
+        _reservas.Setup(r => r.ListarPorOsAsync(os, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ReservaPeca> { comEstoque, semEstoque });
+        _estoque.Setup(x => x.ObterPorPecaIdAsync(est.PecaId, It.IsAny<CancellationToken>())).ReturnsAsync(est);
+
+        var act = async () => await Uc().FinalizarAsync(e.Id);
+
+        await act.Should().ThrowAsync<DomainException>();
+        comEstoque.Status.Should().Be(StatusReserva.Ativa);
+        est.QuantidadeReservada.Should().Be(2);
+        e.Status.Should().Be(StatusExecucao.EmReparo);
+        _uow.Verify(u => u.CommitAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Falhar_ja_falhou_sem_motivo_devolve_estado()
+    {
+        var e = Setup(ExecucaoOS.Enfileirar(Guid.NewGuid(), Array.Empty<(Guid, int)>()));
+        e.Falhar("motor fundido");
+
+        // Reentrega: a guarda de status vem antes da validação de Motivo.
+        var r = await Uc().FalharAsync(e.Id, new FalharExecucaoRequest(""));
+
+        r.Status.Should().Be("Falhou");
+        r.MotivoFalha.Should().Be("motor fundido");
+        _bus.Verify(b => b.Publish(It.IsAny<ExecucaoFalhou>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

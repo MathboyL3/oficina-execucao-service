@@ -50,6 +50,49 @@ public class CatalogoUseCasesTests
         => await FluentActions.Awaiting(() => PecaUc().ObterAsync(Guid.NewGuid())).Should().ThrowAsync<NotFoundException>();
 
     [Fact]
+    public async Task Obter_servico_retorna_response()
+    {
+        var s = Servico.Cadastrar("Alinhamento", "Geometria", Money.Brl(150m), TimeSpan.FromMinutes(60));
+        _servicos.Setup(r => r.ObterPorIdAsync(s.Id, It.IsAny<CancellationToken>())).ReturnsAsync(s);
+
+        var r = await ServicoUc().ObterAsync(s.Id);
+
+        r.Id.Should().Be(s.Id);
+        r.Nome.Should().Be("Alinhamento");
+        r.ValorBase.Should().Be(150m);
+        r.Ativo.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Obter_peca_com_estoque_inclui_saldo()
+    {
+        var p = Peca.Cadastrar("Filtro de óleo", "fil-1", "un", Money.Brl(30m));
+        _pecas.Setup(r => r.ObterPorIdAsync(p.Id, It.IsAny<CancellationToken>())).ReturnsAsync(p);
+        _estoque.Setup(e => e.ObterPorPecaIdAsync(p.Id, It.IsAny<CancellationToken>())).ReturnsAsync(EstoquePeca.Criar(p.Id, 3, 1));
+
+        var r = await PecaUc().ObterAsync(p.Id);
+
+        r.Id.Should().Be(p.Id);
+        r.Valor.Should().Be(30m);
+        r.QuantidadeDisponivel.Should().Be(3);
+        r.QuantidadeReservada.Should().Be(0);
+        r.LimiteMinimo.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Obter_peca_sem_estoque_retorna_saldo_zerado()
+    {
+        var p = Peca.Cadastrar("Filtro de óleo", "fil-1", "un", Money.Brl(30m));
+        _pecas.Setup(r => r.ObterPorIdAsync(p.Id, It.IsAny<CancellationToken>())).ReturnsAsync(p);
+
+        var r = await PecaUc().ObterAsync(p.Id);
+
+        r.QuantidadeDisponivel.Should().Be(0);
+        r.LimiteMinimo.Should().Be(0);
+        r.EstoqueBaixo.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Servico_inexistente_lanca_NotFound()
         => await FluentActions.Awaiting(() => ServicoUc().ObterAsync(Guid.NewGuid())).Should().ThrowAsync<NotFoundException>();
 

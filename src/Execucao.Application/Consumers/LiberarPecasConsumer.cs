@@ -31,24 +31,34 @@ public sealed class LiberarPecasConsumer : IConsumer<LiberarPecas>
         var msg = context.Message;
         var ct = context.CancellationToken;
 
-        // Só reservas Ativas são estornadas: mensagem duplicada não pode lançar.
+        // 1ª passada, só leitura: só reservas Ativas são estornadas (mensagem duplicada não
+        // pode lançar) e todos os estoques são resolvidos antes de qualquer mutação.
+        var alvos = new List<(EstoquePeca estoque, ReservaPeca reserva)>();
         foreach (var r in (await _reservas.ListarPorOsAsync(msg.OrdemServicoId, ct)).Where(r => r.Status == StatusReserva.Ativa))
         {
             var est = await _estoque.ObterPorPecaIdAsync(r.PecaId, ct)
                 ?? throw new DomainException($"Estoque da peça {r.PecaId} não encontrado para estornar a reserva da OS {msg.OrdemServicoId}.");
+            alvos.Add((est, r));
+        }
+
+        // Marcador gravado (mesmo sem reservas) ANTES do estorno: uma reserva fora de ordem
+        // depois disto é recusada por ReservarPecas.
+        if (!await _liberacoes.ExisteAsync(msg.OrdemServicoId, ct))
+            await _liberacoes.AdicionarAsync(LiberacaoOs.Criar(msg.OrdemServicoId), ct);
+
+        // 2ª passada: com tudo validado, estorna e libera.
+        foreach (var (est, r) in alvos)
+        {
             est.EstornarReserva(r.Quantidade, $"OS cancelada:{msg.OrdemServicoId}");
             r.Liberar();
         }
-
-        // Marcador sempre gravado (mesmo sem reservas): uma reserva fora de ordem depois disto é recusada.
-        if (!await _liberacoes.ExisteAsync(msg.OrdemServicoId, ct))
-            await _liberacoes.AdicionarAsync(LiberacaoOs.Criar(msg.OrdemServicoId), ct);
 
         var exec = await _execucoes.ObterPorOsAsync(msg.OrdemServicoId, ct);
         if (exec is not null && exec.Status is not (StatusExecucao.Finalizada or StatusExecucao.Falhou))
             exec.Falhar(msg.Motivo);
 
-        await _uow.CommitAsync(ct);
+        // Publica antes do SaveChanges: o outbox só entrega o que entrou no commit.
         await context.Publish(new PecasLiberadas(msg.OrdemServicoId, DateTime.UtcNow), ct);
+        await _uow.CommitAsync(ct);
     }
 }

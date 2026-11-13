@@ -31,6 +31,10 @@ public sealed class ReservarPecasConsumer : IConsumer<ReservarPecas>
         var msg = context.Message;
         var ct = context.CancellationToken;
 
+        // Sem OS não há saga para avisar: mensagem inválida sobe para o retry/dead-letter.
+        if (msg.OrdemServicoId == Guid.Empty)
+            throw new DomainException("OS é obrigatória.");
+
         // Ordem invertida: a liberação pode chegar antes da reserva; a OS cancelada não reserva mais.
         if (await _liberacoes.ExisteAsync(msg.OrdemServicoId, ct))
         {
@@ -43,12 +47,16 @@ public sealed class ReservarPecasConsumer : IConsumer<ReservarPecas>
         if (existentes.Count > 0)
         {
             if (existentes.Any(r => r.Status == StatusReserva.Ativa))
+            {
                 await context.Publish(new PecasReservadas(msg.OrdemServicoId, DateTime.UtcNow), ct);
+                await _uow.CommitAsync(ct);
+            }
             else
                 _logger.LogInformation("OS {OrdemServicoId} já teve reservas encerradas: nada a reservar.", msg.OrdemServicoId);
             return;
         }
 
+        List<(EstoquePeca estoque, int qtd)> reservas;
         try
         {
             // 1ª passada: agrupa por peça e valida quantidade e saldo antes de mexer em qualquer saldo.
@@ -60,7 +68,7 @@ public sealed class ReservarPecasConsumer : IConsumer<ReservarPecas>
                 alvos[item.PecaId] = alvos.GetValueOrDefault(item.PecaId) + item.Quantidade;
             }
 
-            var reservas = new List<(EstoquePeca estoque, int qtd)>();
+            reservas = new List<(EstoquePeca, int)>();
             foreach (var (pecaId, qtd) in alvos)
             {
                 var est = await _estoque.ObterPorPecaIdAsync(pecaId, ct)
@@ -69,20 +77,25 @@ public sealed class ReservarPecasConsumer : IConsumer<ReservarPecas>
                     throw new DomainException($"Estoque insuficiente da peça {pecaId}. Disponível: {est.QuantidadeDisponivel}, solicitado: {qtd}.");
                 reservas.Add((est, qtd));
             }
-
-            // 2ª passada: só reserva depois que tudo passou na validação.
-            foreach (var (est, qtd) in reservas)
-            {
-                est.Reservar(qtd, $"OS:{msg.OrdemServicoId}");
-                await _reservas.AdicionarAsync(ReservaPeca.Criar(msg.OrdemServicoId, est.PecaId, qtd), ct);
-            }
-            if (reservas.Count > 0) await _uow.CommitAsync(ct);
-            await context.Publish(new PecasReservadas(msg.OrdemServicoId, DateTime.UtcNow), ct);
         }
         catch (DomainException ex)
         {
+            // Só a validação vira ReservaPecasFalhou: nada foi mutado e nada ficará reservado.
             await PublicarFalha(context, msg.OrdemServicoId, ex.Message, ct);
+            return;
         }
+
+        // 2ª passada: só reserva depois que tudo passou na validação. A falha daqui em diante
+        // sobe para o retry — não pode ser anunciada como "sem peças" com saldo já mexido.
+        foreach (var (est, qtd) in reservas)
+        {
+            est.Reservar(qtd, $"OS:{msg.OrdemServicoId}");
+            await _reservas.AdicionarAsync(ReservaPeca.Criar(msg.OrdemServicoId, est.PecaId, qtd), ct);
+        }
+
+        // Publica antes do SaveChanges: o outbox só entrega o que entrou no commit.
+        await context.Publish(new PecasReservadas(msg.OrdemServicoId, DateTime.UtcNow), ct);
+        await _uow.CommitAsync(ct);
     }
 
     /// <summary>Publica a falha e confirma: sem commit o outbox não grava a mensagem. Nada foi mutado até aqui.</summary>

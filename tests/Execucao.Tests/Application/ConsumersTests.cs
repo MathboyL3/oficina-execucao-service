@@ -46,9 +46,16 @@ public class ConsumersTests
         _estoque.Setup(e => e.ObterPorPecaIdAsync(p2.PecaId, It.IsAny<CancellationToken>())).ReturnsAsync(p2);
         _reservas.Setup(r => r.ListarPorOsAsync(os, It.IsAny<CancellationToken>())).ReturnsAsync(new List<ReservaPeca>());
         var ctx = Ctx(new ReservarPecas(os, DateTime.UtcNow, new[] { new ItemPecaQtd(p1.PecaId, 2), new ItemPecaQtd(p2.PecaId, 3) }));
+        var ordem = new List<string>();
+        ctx.Setup(c => c.Publish(It.IsAny<PecasReservadas>(), It.IsAny<CancellationToken>()))
+            .Callback(() => ordem.Add("publicar")).Returns(Task.CompletedTask);
+        _uow.Setup(u => u.CommitAsync(It.IsAny<CancellationToken>()))
+            .Callback(() => ordem.Add("commit")).ReturnsAsync(1);
 
         await Reservar().Consume(ctx.Object);
 
+        // O outbox só entrega o PecasReservadas se ele entrar no SaveChanges.
+        ordem.Should().Equal("publicar", "commit");
         p1.QuantidadeReservada.Should().Be(2);
         p2.QuantidadeReservada.Should().Be(3);
         _reservas.Verify(r => r.AdicionarAsync(It.IsAny<ReservaPeca>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
@@ -147,11 +154,16 @@ public class ConsumersTests
         _reservas.Setup(r => r.ListarPorOsAsync(os, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<ReservaPeca> { ReservaPeca.Criar(os, Guid.NewGuid(), 1) });
         var ctx = Ctx(new ReservarPecas(os, DateTime.UtcNow, new[] { new ItemPecaQtd(Guid.NewGuid(), 1) }));
+        var ordem = new List<string>();
+        ctx.Setup(c => c.Publish(It.IsAny<PecasReservadas>(), It.IsAny<CancellationToken>()))
+            .Callback(() => ordem.Add("publicar")).Returns(Task.CompletedTask);
+        _uow.Setup(u => u.CommitAsync(It.IsAny<CancellationToken>()))
+            .Callback(() => ordem.Add("commit")).ReturnsAsync(1);
 
         await Reservar().Consume(ctx.Object);
 
-        _uow.Verify(u => u.CommitAsync(It.IsAny<CancellationToken>()), Times.Never);
-        ctx.Verify(c => c.Publish(It.IsAny<PecasReservadas>(), It.IsAny<CancellationToken>()), Times.Once);
+        _estoque.Verify(e => e.ObterPorPecaIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        ordem.Should().Equal("publicar", "commit");
     }
 
     [Fact]
@@ -177,10 +189,48 @@ public class ConsumersTests
         var os = Guid.NewGuid();
         _reservas.Setup(r => r.ListarPorOsAsync(os, It.IsAny<CancellationToken>())).ReturnsAsync(new List<ReservaPeca>());
         var ctx = Ctx(new ReservarPecas(os, DateTime.UtcNow, Array.Empty<ItemPecaQtd>()));
+        var ordem = new List<string>();
+        ctx.Setup(c => c.Publish(It.IsAny<PecasReservadas>(), It.IsAny<CancellationToken>()))
+            .Callback(() => ordem.Add("publicar")).Returns(Task.CompletedTask);
+        _uow.Setup(u => u.CommitAsync(It.IsAny<CancellationToken>()))
+            .Callback(() => ordem.Add("commit")).ReturnsAsync(1);
 
         await Reservar().Consume(ctx.Object);
 
-        ctx.Verify(c => c.Publish(It.IsAny<PecasReservadas>(), It.IsAny<CancellationToken>()), Times.Once);
+        ordem.Should().Equal("publicar", "commit");
+    }
+
+    [Fact]
+    public async Task Reservar_com_os_vazia_lanca_sem_publicar_nem_commitar()
+    {
+        var ctx = Ctx(new ReservarPecas(Guid.Empty, DateTime.UtcNow, new[] { new ItemPecaQtd(Guid.NewGuid(), 1) }));
+
+        var act = async () => await Reservar().Consume(ctx.Object);
+
+        await act.Should().ThrowAsync<DomainException>();
+        ctx.Verify(c => c.Publish(It.IsAny<PecasReservadas>(), It.IsAny<CancellationToken>()), Times.Never);
+        ctx.Verify(c => c.Publish(It.IsAny<ReservaPecasFalhou>(), It.IsAny<CancellationToken>()), Times.Never);
+        _liberacoes.Verify(l => l.ExisteAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _uow.Verify(u => u.CommitAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Reservar_falha_ao_persistir_nao_vira_ReservaPecasFalhou()
+    {
+        var os = Guid.NewGuid();
+        var p = EstoquePeca.Criar(Guid.NewGuid(), 5);
+        _estoque.Setup(e => e.ObterPorPecaIdAsync(p.PecaId, It.IsAny<CancellationToken>())).ReturnsAsync(p);
+        _reservas.Setup(r => r.ListarPorOsAsync(os, It.IsAny<CancellationToken>())).ReturnsAsync(new List<ReservaPeca>());
+        _reservas.Setup(r => r.AdicionarAsync(It.IsAny<ReservaPeca>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new DomainException("falha de persistência"));
+        var ctx = Ctx(new ReservarPecas(os, DateTime.UtcNow, new[] { new ItemPecaQtd(p.PecaId, 1) }));
+
+        var act = async () => await Reservar().Consume(ctx.Object);
+
+        // A mutação já aconteceu: o catch de validação não pode engolir o erro como "sem peças".
+        await act.Should().ThrowAsync<DomainException>().WithMessage("falha de persistência");
+        ctx.Verify(c => c.Publish(It.IsAny<ReservaPecasFalhou>(), It.IsAny<CancellationToken>()), Times.Never);
+        _uow.Verify(u => u.CommitAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -213,6 +263,52 @@ public class ConsumersTests
         _reservas.Verify(r => r.AdicionarAsync(It.IsAny<ReservaPeca>(), It.IsAny<CancellationToken>()), Times.Never);
         ctx.Verify(c => c.Publish(It.Is<ReservaPecasFalhou>(m => m.OrdemServicoId == os && m.Motivo.Contains("liberada")), It.IsAny<CancellationToken>()), Times.Once);
         ctx.Verify(c => c.Publish(It.IsAny<PecasReservadas>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Liberar_valida_todos_os_estoques_antes_de_marcar_liberacao()
+    {
+        var os = Guid.NewGuid();
+        var ok = EstoquePeca.Criar(Guid.NewGuid(), 5);
+        ok.Reservar(2, "x");
+        var comEstoque = ReservaPeca.Criar(os, ok.PecaId, 2);
+        var semEstoque = ReservaPeca.Criar(os, Guid.NewGuid(), 1);
+        _reservas.Setup(r => r.ListarPorOsAsync(os, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ReservaPeca> { comEstoque, semEstoque });
+        _estoque.Setup(e => e.ObterPorPecaIdAsync(ok.PecaId, It.IsAny<CancellationToken>())).ReturnsAsync(ok);
+        var ctx = Ctx(new LiberarPecas(os, DateTime.UtcNow, "cancelada"));
+
+        var act = async () => await Liberar().Consume(ctx.Object);
+
+        await act.Should().ThrowAsync<DomainException>();
+        // 1ª passada só leitura: nada estornado e nenhum marcador gravado.
+        comEstoque.Status.Should().Be(StatusReserva.Ativa);
+        ok.QuantidadeReservada.Should().Be(2);
+        _liberacoes.Verify(l => l.AdicionarAsync(It.IsAny<LiberacaoOs>(), It.IsAny<CancellationToken>()), Times.Never);
+        _uow.Verify(u => u.CommitAsync(It.IsAny<CancellationToken>()), Times.Never);
+        ctx.Verify(c => c.Publish(It.IsAny<PecasLiberadas>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Liberar_grava_marcador_depois_de_validar_os_estoques()
+    {
+        var os = Guid.NewGuid();
+        var est = EstoquePeca.Criar(Guid.NewGuid(), 5);
+        est.Reservar(2, "x");
+        _reservas.Setup(r => r.ListarPorOsAsync(os, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ReservaPeca> { ReservaPeca.Criar(os, est.PecaId, 2) });
+        var ordem = new List<string>();
+        _estoque.Setup(e => e.ObterPorPecaIdAsync(est.PecaId, It.IsAny<CancellationToken>()))
+            .Callback(() => ordem.Add("validar")).ReturnsAsync(est);
+        _liberacoes.Setup(l => l.AdicionarAsync(It.IsAny<LiberacaoOs>(), It.IsAny<CancellationToken>()))
+            .Callback(() => ordem.Add("marcador")).Returns(Task.CompletedTask);
+        var ctx = Ctx(new LiberarPecas(os, DateTime.UtcNow, "cancelada"));
+
+        await Liberar().Consume(ctx.Object);
+
+        ordem.Should().Equal("validar", "marcador");
+        _liberacoes.Verify(l => l.AdicionarAsync(It.Is<LiberacaoOs>(x => x.OrdemServicoId == os), It.IsAny<CancellationToken>()), Times.Once);
+        _uow.Verify(u => u.CommitAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -309,6 +405,7 @@ public class ConsumersTests
 
         await act.Should().ThrowAsync<DomainException>();
         ativa.Status.Should().Be(StatusReserva.Ativa);
+        _liberacoes.Verify(l => l.AdicionarAsync(It.IsAny<LiberacaoOs>(), It.IsAny<CancellationToken>()), Times.Never);
         _uow.Verify(u => u.CommitAsync(It.IsAny<CancellationToken>()), Times.Never);
         ctx.Verify(c => c.Publish(It.IsAny<PecasLiberadas>(), It.IsAny<CancellationToken>()), Times.Never);
     }

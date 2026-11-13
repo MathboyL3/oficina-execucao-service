@@ -63,14 +63,25 @@ public sealed class ExecucaoUseCases
         if (e.Status == StatusExecucao.Finalizada)
             return e.ToResponse();
 
+        // Resolve todos os estoques das reservas Ativas ANTES de mudar o status: se faltar
+        // algum, nada é consumido e a execução continua em EmReparo.
+        var reservas = (await _reservas.ListarPorOsAsync(e.OrdemServicoId, ct))
+            .Where(r => r.Status == StatusReserva.Ativa)
+            .ToList();
+        var alvos = new List<(EstoquePeca estoque, ReservaPeca reserva)>();
+        foreach (var r in reservas)
+        {
+            var est = await _estoque.ObterPorPecaIdAsync(r.PecaId, ct)
+                ?? throw new DomainException($"Estoque da peça {r.PecaId} não encontrado para consumir a reserva da OS {e.OrdemServicoId}.");
+            alvos.Add((est, r));
+        }
+
         e.Finalizar();
 
         // Consumo atômico das reservas na finalização (não há consumo parcial);
         // só as Ativas mudam de status, então reentrega não quebra a idempotência.
-        foreach (var r in (await _reservas.ListarPorOsAsync(e.OrdemServicoId, ct)).Where(r => r.Status == StatusReserva.Ativa))
+        foreach (var (est, r) in alvos)
         {
-            var est = await _estoque.ObterPorPecaIdAsync(r.PecaId, ct)
-                ?? throw new DomainException($"Estoque da peça {r.PecaId} não encontrado para consumir a reserva da OS {e.OrdemServicoId}.");
             est.ConsumirReservado(r.Quantidade, $"OS finalizada:{e.OrdemServicoId}");
             r.Consumir();
         }
@@ -82,15 +93,16 @@ public sealed class ExecucaoUseCases
 
     public async Task<ExecucaoResponse> FalharAsync(Guid id, FalharExecucaoRequest req, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(req.Motivo))
-            throw new DomainException("Motivo da falha é obrigatório.");
-
         // As peças não são liberadas aqui: a Saga responde com LiberarPecas.
         var e = await Carregar(id, ct);
 
         // Reentrega sobre execução já Falhou: devolve o estado sem publicar nem reabrir a transação.
+        // A guarda vem antes da validação de Motivo para não recusar uma reentrega legítima.
         if (e.Status == StatusExecucao.Falhou)
             return e.ToResponse();
+
+        if (string.IsNullOrWhiteSpace(req.Motivo))
+            throw new DomainException("Motivo da falha é obrigatório.");
 
         e.Falhar(req.Motivo);
         await _bus.Publish(new ExecucaoFalhou(e.OrdemServicoId, DateTime.UtcNow, e.Id, req.Motivo), ct);
