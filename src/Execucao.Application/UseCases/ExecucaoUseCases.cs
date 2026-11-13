@@ -46,6 +46,9 @@ public sealed class ExecucaoUseCases
 
     public async Task<ExecucaoResponse> RegistrarDiagnosticoAsync(Guid id, RegistrarDiagnosticoRequest req, CancellationToken ct = default)
     {
+        if (string.IsNullOrWhiteSpace(req.Observacoes))
+            throw new DomainException("Observações do diagnóstico são obrigatórias.");
+
         var e = await Carregar(id, ct);
         e.RegistrarDiagnostico(req.Observacoes);
         await _uow.CommitAsync(ct);
@@ -55,14 +58,20 @@ public sealed class ExecucaoUseCases
     public async Task<ExecucaoResponse> FinalizarAsync(Guid id, CancellationToken ct = default)
     {
         var e = await Carregar(id, ct);
+
+        // Reentrega sobre execução já Finalizada: devolve o estado sem publicar nem reabrir a transação.
+        if (e.Status == StatusExecucao.Finalizada)
+            return e.ToResponse();
+
         e.Finalizar();
 
         // Consumo atômico das reservas na finalização (não há consumo parcial);
         // só as Ativas mudam de status, então reentrega não quebra a idempotência.
         foreach (var r in (await _reservas.ListarPorOsAsync(e.OrdemServicoId, ct)).Where(r => r.Status == StatusReserva.Ativa))
         {
-            var est = await _estoque.ObterPorPecaIdAsync(r.PecaId, ct);
-            est?.ConsumirReservado(r.Quantidade, $"OS finalizada:{e.OrdemServicoId}");
+            var est = await _estoque.ObterPorPecaIdAsync(r.PecaId, ct)
+                ?? throw new DomainException($"Estoque da peça {r.PecaId} não encontrado para consumir a reserva da OS {e.OrdemServicoId}.");
+            est.ConsumirReservado(r.Quantidade, $"OS finalizada:{e.OrdemServicoId}");
             r.Consumir();
         }
 
@@ -73,8 +82,16 @@ public sealed class ExecucaoUseCases
 
     public async Task<ExecucaoResponse> FalharAsync(Guid id, FalharExecucaoRequest req, CancellationToken ct = default)
     {
+        if (string.IsNullOrWhiteSpace(req.Motivo))
+            throw new DomainException("Motivo da falha é obrigatório.");
+
         // As peças não são liberadas aqui: a Saga responde com LiberarPecas.
         var e = await Carregar(id, ct);
+
+        // Reentrega sobre execução já Falhou: devolve o estado sem publicar nem reabrir a transação.
+        if (e.Status == StatusExecucao.Falhou)
+            return e.ToResponse();
+
         e.Falhar(req.Motivo);
         await _bus.Publish(new ExecucaoFalhou(e.OrdemServicoId, DateTime.UtcNow, e.Id, req.Motivo), ct);
         await _uow.CommitAsync(ct);
