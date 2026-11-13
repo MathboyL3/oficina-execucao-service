@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Execucao.Application.Common;
 using Execucao.Domain.Common;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace Execucao.Api.Middleware;
 
@@ -37,12 +39,27 @@ public sealed class ErrorHandlingMiddleware
         {
             await Write(ctx, StatusCodes.Status400BadRequest, ex.Message);
         }
+        // Conflito de concorrência do xmin (estoque) ou violação de índice único
+        // (ex.: uma execução por OS): a requisição é repetível, não é erro interno.
+        catch (DbUpdateConcurrencyException ex)
+        {
+            _log.LogWarning(ex, "Conflito de concorrência ao salvar");
+            await Write(ctx, StatusCodes.Status409Conflict, "O registro foi alterado por outra operação. Tente novamente.");
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            _log.LogWarning(ex, "Violação de unicidade ao salvar");
+            await Write(ctx, StatusCodes.Status409Conflict, "Já existe um registro com os mesmos dados.");
+        }
         catch (Exception ex)
         {
             _log.LogError(ex, "Erro não tratado");
             await Write(ctx, StatusCodes.Status500InternalServerError, "Erro interno do servidor.");
         }
     }
+
+    private static bool IsUniqueViolation(DbUpdateException ex)
+        => ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
 
     private static async Task Write(HttpContext ctx, int status, string message)
     {

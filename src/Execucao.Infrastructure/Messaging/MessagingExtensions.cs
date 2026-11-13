@@ -47,10 +47,11 @@ public static class MessagingExtensions
 
             x.UsingRabbitMq((ctx, c) =>
             {
-                c.Host(cfg["RabbitMq:Host"] ?? "localhost", cfg["RabbitMq:VirtualHost"] ?? "/", h =>
+                var rabbit = RabbitMqOptions.FromConfiguration(cfg);
+                c.Host(rabbit.Host, (ushort)rabbit.Port, rabbit.VirtualHost, h =>
                 {
-                    h.Username(cfg["RabbitMq:Username"] ?? "guest");
-                    h.Password(cfg["RabbitMq:Password"] ?? "guest");
+                    h.Username(rabbit.Username);
+                    h.Password(rabbit.Password);
                 });
                 c.ConfigureEndpoints(ctx);
             });

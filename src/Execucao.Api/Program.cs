@@ -73,14 +73,11 @@ if (!builder.Environment.IsEnvironment("Testing"))
     builder.Services.AddDbContext<ExecucaoDbContext>(o => o.UseNpgsql(connStr));
     health.AddDbContextCheck<ExecucaoDbContext>("postgres", tags: new[] { "ready" });
 
-    var rabbitHost = builder.Configuration["RabbitMq:Host"] ?? "localhost";
-    var rabbitUser = builder.Configuration["RabbitMq:Username"] ?? "guest";
-    var rabbitPass = builder.Configuration["RabbitMq:Password"] ?? "guest";
-    var rabbitUri = new Uri($"amqp://{rabbitUser}:{rabbitPass}@{rabbitHost}:5672");
+    var rabbit = RabbitMqOptions.FromConfiguration(builder.Configuration);
     // O health check do pacote 9.0.0 não fecha a conexão que a factory dele cria (uma por probe),
     // então a conexão vira singleton resolvido pelo DI e é fechada no shutdown do host.
     builder.Services.AddSingleton<IConnection>(_ =>
-        new ConnectionFactory { Uri = rabbitUri }.CreateConnectionAsync().GetAwaiter().GetResult());
+        rabbit.CreateConnectionFactory().CreateConnectionAsync().GetAwaiter().GetResult());
     health.AddRabbitMQ(name: "rabbitmq", tags: new[] { "ready" });
 }
 
