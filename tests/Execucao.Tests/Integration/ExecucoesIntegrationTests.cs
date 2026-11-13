@@ -100,4 +100,13 @@ public class ExecucoesIntegrationTests : IClassFixture<ExecucaoApiFactory>
     [Fact]
     public async Task Health_live_ok()
         => (await _f.CreateClient().GetAsync("/health/live")).StatusCode.Should().Be(HttpStatusCode.OK);
+
+    [Fact]
+    public async Task Swagger_na_raiz_expoe_o_documento_v1()
+    {
+        var doc = await _f.CreateClient().GetAsync("/swagger/v1/swagger.json");
+
+        doc.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await doc.Content.ReadAsStringAsync()).Should().Contain("/api/execucoes");
+    }
 }
