@@ -7,20 +7,22 @@ using Oficina.Contracts;
 
 namespace Execucao.Application.Consumers;
 
-/// <summary>Compensação: libera reservas Ativas e marca a execução como Falhou. Sempre confirma.</summary>
+/// <summary>Compensação: estorna reservas Ativas, registra a liberação e marca a execução como Falhou. Sempre confirma.</summary>
 public sealed class LiberarPecasConsumer : IConsumer<LiberarPecas>
 {
     private readonly IEstoquePecaRepository _estoque;
     private readonly IReservaPecaRepository _reservas;
     private readonly IExecucaoRepository _execucoes;
+    private readonly ILiberacaoOsRepository _liberacoes;
     private readonly IUnitOfWork _uow;
 
     public LiberarPecasConsumer(IEstoquePecaRepository estoque, IReservaPecaRepository reservas,
-        IExecucaoRepository execucoes, IUnitOfWork uow)
+        IExecucaoRepository execucoes, ILiberacaoOsRepository liberacoes, IUnitOfWork uow)
     {
         _estoque = estoque;
         _reservas = reservas;
         _execucoes = execucoes;
+        _liberacoes = liberacoes;
         _uow = uow;
     }
 
@@ -32,10 +34,15 @@ public sealed class LiberarPecasConsumer : IConsumer<LiberarPecas>
         // Só reservas Ativas são estornadas: mensagem duplicada não pode lançar.
         foreach (var r in (await _reservas.ListarPorOsAsync(msg.OrdemServicoId, ct)).Where(r => r.Status == StatusReserva.Ativa))
         {
-            var est = await _estoque.ObterPorPecaIdAsync(r.PecaId, ct);
-            est?.EstornarReserva(r.Quantidade, $"OS cancelada:{msg.OrdemServicoId}");
+            var est = await _estoque.ObterPorPecaIdAsync(r.PecaId, ct)
+                ?? throw new DomainException($"Estoque da peça {r.PecaId} não encontrado para estornar a reserva da OS {msg.OrdemServicoId}.");
+            est.EstornarReserva(r.Quantidade, $"OS cancelada:{msg.OrdemServicoId}");
             r.Liberar();
         }
+
+        // Marcador sempre gravado (mesmo sem reservas): uma reserva fora de ordem depois disto é recusada.
+        if (!await _liberacoes.ExisteAsync(msg.OrdemServicoId, ct))
+            await _liberacoes.AdicionarAsync(LiberacaoOs.Criar(msg.OrdemServicoId), ct);
 
         var exec = await _execucoes.ObterPorOsAsync(msg.OrdemServicoId, ct);
         if (exec is not null && exec.Status is not (StatusExecucao.Finalizada or StatusExecucao.Falhou))

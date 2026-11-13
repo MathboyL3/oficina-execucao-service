@@ -26,7 +26,8 @@ public sealed class EnfileirarExecucaoConsumer : IConsumer<EnfileirarExecucao>
         if (await _execucoes.ObterPorOsAsync(msg.OrdemServicoId, ct) is not null)
             return;
 
-        var exec = ExecucaoOS.Enfileirar(msg.OrdemServicoId, msg.Servicos.Select(s => (s.ServicoId, s.Quantidade)));
+        var exec = ExecucaoOS.Enfileirar(msg.OrdemServicoId,
+            (msg.Servicos ?? Array.Empty<ItemServicoQtd>()).Select(s => (s.ServicoId, s.Quantidade)));
         await _execucoes.AdicionarAsync(exec, ct);
         await _uow.CommitAsync(ct);
     }
