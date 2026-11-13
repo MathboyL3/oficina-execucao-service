@@ -15,7 +15,7 @@
     <ThresholdType>line</ThresholdType>
     <ThresholdStat>total</ThresholdStat>
     <ExcludeByFile>**/Program.cs%2c**/DependencyInjection.cs%2c**/Migrations/*.cs%2c**/Persistence/Configurations/*.cs%2c**/*DbContextFactory.cs</ExcludeByFile>
-    <Exclude>[*]Microsoft.AspNetCore.OpenApi.Generated.*%2c[*]System.Runtime.CompilerServices.*%2c[*]System.Text.RegularExpressions.Generated.*</Exclude>
+    <Exclude>[*]System.Runtime.CompilerServices.*%2c[*]System.Text.RegularExpressions.Generated.*</Exclude>
   </PropertyGroup>
 
   <ItemGroup>
