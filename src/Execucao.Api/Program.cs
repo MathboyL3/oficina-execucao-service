@@ -128,7 +128,7 @@ if (!app.Environment.IsEnvironment("Testing"))
     using var scope = app.Services.CreateScope();
     var ctx = scope.ServiceProvider.GetRequiredService<ExecucaoDbContext>();
     if (ctx.Database.IsRelational())
-        ctx.Database.Migrate();
+        ctx.MigrateComLock();
 }
 
 // Correlacao: injeta trace.id/span.id (padrao New Relic) no contexto de log.

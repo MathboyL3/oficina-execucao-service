@@ -15,7 +15,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: oficina-execucao-service
-    app.kubernetes.io/part-of: oficina
+        app.kubernetes.io/part-of: oficina
     spec:
       imagePullSecrets:
         - name: ghcr-pull
