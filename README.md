@@ -1,6 +1,6 @@
 # oficina-execucao-service
 
-Catálogo de serviços/peças, estoque, reserva de peças e fila de execução da oficina — Tech Challenge Fase 4 (SOAT/FIAP). Participa da **Saga orquestrada** do [oficina-os-service](https://github.com/MathboyL3/oficina-os-service) sobre RabbitMQ (MassTransit), com **PostgreSQL** próprio. Arquitetura geral: [`docs/ARQUITETURA-FASE4.md`](https://github.com/MathboyL3/oficina-os-service/blob/feat/fase4/docs/ARQUITETURA-FASE4.md) no os-service.
+Catálogo de serviços/peças, estoque, reserva de peças e fila de execução da oficina — Tech Challenge Fase 4 (SOAT/FIAP). Participa da **Saga orquestrada** do [oficina-os-service](https://github.com/MathboyL3/oficina-os-service) sobre RabbitMQ (MassTransit), com **PostgreSQL** próprio. Arquitetura geral: [`docs/ARQUITETURA-FASE4.md`](https://github.com/MathboyL3/oficina-os-service/blob/main/docs/ARQUITETURA-FASE4.md) no os-service.
 
 ## Responsabilidades
 
