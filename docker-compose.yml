@@ -1,0 +1,43 @@
+services:
+  execucao-db:
+    image: postgres:16
+    container_name: execucao-db
+    environment:
+      POSTGRES_USER: oficina
+      POSTGRES_PASSWORD: oficina
+      POSTGRES_DB: oficina_execucao
+    ports:
+      - "5434:5432"
+    volumes:
+      - execucao-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oficina -d oficina_execucao"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  execucao-api:
+    build: .
+    image: oficina-execucao-service:local
+    container_name: execucao-api
+    depends_on:
+      execucao-db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__Username: guest
+      RabbitMq__Password: guest
+      NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY:-}
+      ConnectionStrings__Postgres: Host=execucao-db;Port=5432;Database=oficina_execucao;Username=oficina;Password=oficina
+    ports:
+      - "5003:8080"
+
+volumes:
+  execucao-db-data:
+
+networks:
+  default:
+    name: oficina-dev
+    external: true
